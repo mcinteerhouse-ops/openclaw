@@ -127,7 +127,8 @@ Before asking for help, check:
 
 - the PR description is current;
 - the latest commit contains the requested change;
-- CI has finished, or the remaining failure is relevant to the question;
+- CI has finished, or you can explain why any remaining failure is relevant to
+  the question;
 - the review request was made as a PR comment:
   `@clawsweeper re-review`;
 - a maintainer or contributor is not already actively working on the PR;
