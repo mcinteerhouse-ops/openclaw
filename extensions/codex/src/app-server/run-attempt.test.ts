@@ -2247,9 +2247,10 @@ describe("runCodexAppServerAttempt", () => {
       { type: "text", text: "queued context\n\nhello\n\ntail context", text_elements: [] },
     ]);
     const [llmInputPayload] = mockCall(llmInput, "llm_input") as [
-      { historyMessages?: unknown[] },
+      { historyMessages?: unknown[]; prompt?: string },
       unknown,
     ];
+    expect(llmInputPayload.prompt).toBe("queued context\n\nhello\n\ntail context");
     expect(llmInputPayload.historyMessages).toEqual([]);
   });
 
