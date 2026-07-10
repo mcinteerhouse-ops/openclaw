@@ -95,6 +95,31 @@ function firstGatewayParams(): Record<string, unknown> {
   return params as Record<string, unknown>;
 }
 
+function productionAssistantMessage(params: {
+  content: unknown[];
+  stopReason: "aborted" | "stop" | "toolUse";
+}): Record<string, unknown> {
+  return {
+    role: "assistant",
+    content: params.content,
+    provider: "openai-codex",
+    model: "gpt-5.4",
+    api: "openai-responses",
+    usage: {
+      input: 100,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 120,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: Date.now(),
+    stopReason: params.stopReason,
+    idempotencyKey: "restart-regression-fixture",
+    __openclaw: { mirrorIdentity: "restart-regression-fixture" },
+  };
+}
+
 describe("main-session-restart-recovery", () => {
   it("marks only matching running main sessions by active session key", async () => {
     // Only top-level running main sessions are restart-recoverable. Completed,
@@ -1281,7 +1306,7 @@ describe("main-session-restart-recovery", () => {
     expect(customStore["agent:main:main"]?.abortedLastRun).toBe(false);
   });
 
-  it("fails marked sessions whose transcript tail cannot be resumed", async () => {
+  it("resumes marked sessions whose production-shaped assistant tail is explicitly aborted", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeStore(sessionsDir, {
       "agent:main:main": {
@@ -1293,7 +1318,113 @@ describe("main-session-restart-recovery", () => {
     });
     await writeTranscript(sessionsDir, "main-session", [
       { role: "user", content: "hello" },
-      { role: "assistant", content: "partial answer" },
+      productionAssistantMessage({
+        stopReason: "aborted",
+        content: [{ type: "text", text: "partial answer" }],
+      }),
+    ]);
+
+    const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(result).toEqual({ recovered: 1, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(firstGatewayParams()).toMatchObject({
+      sessionKey: "agent:main:main",
+      deliver: false,
+      lane: "main",
+    });
+    expect(firstGatewayParams().message).toContain("Continue from the existing transcript");
+    const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
+    expect(store["agent:main:main"]?.status).toBe("running");
+    expect(store["agent:main:main"]?.abortedLastRun).toBe(false);
+  });
+
+  it("does not resume a production-shaped completed assistant stop tail", async () => {
+    const sessionsDir = await makeSessionsDir();
+    await writeStore(sessionsDir, {
+      "agent:main:main": {
+        sessionId: "main-session",
+        updatedAt: Date.now() - 10_000,
+        status: "running",
+        abortedLastRun: true,
+      },
+    });
+    await writeTranscript(sessionsDir, "main-session", [
+      { role: "user", content: "hello" },
+      productionAssistantMessage({
+        stopReason: "stop",
+        content: [{ type: "text", text: "completed answer" }],
+      }),
+    ]);
+
+    const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(result).toEqual({ recovered: 0, failed: 1, skipped: 0 });
+    expect(callGateway).not.toHaveBeenCalled();
+    const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
+    expect(store["agent:main:main"]?.status).toBe("failed");
+    expect(store["agent:main:main"]?.abortedLastRun).toBe(true);
+  });
+
+  it("does not blindly resume a production-shaped unresolved assistant tool call", async () => {
+    const sessionsDir = await makeSessionsDir();
+    await writeStore(sessionsDir, {
+      "agent:main:main": {
+        sessionId: "main-session",
+        updatedAt: Date.now() - 10_000,
+        status: "running",
+        abortedLastRun: true,
+      },
+    });
+    await writeTranscript(sessionsDir, "main-session", [
+      { role: "user", content: "change the file" },
+      productionAssistantMessage({
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "exec",
+            arguments: { cmd: "touch side-effect" },
+            input: { cmd: "touch side-effect" },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(result).toEqual({ recovered: 0, failed: 1, skipped: 0 });
+    expect(callGateway).not.toHaveBeenCalled();
+    const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
+    expect(store["agent:main:main"]?.status).toBe("failed");
+    expect(store["agent:main:main"]?.abortedLastRun).toBe(true);
+  });
+
+  it("does not resume an explicitly aborted assistant tail containing a tool call", async () => {
+    const sessionsDir = await makeSessionsDir();
+    await writeStore(sessionsDir, {
+      "agent:main:main": {
+        sessionId: "main-session",
+        updatedAt: Date.now() - 10_000,
+        status: "running",
+        abortedLastRun: true,
+      },
+    });
+    await writeTranscript(sessionsDir, "main-session", [
+      { role: "user", content: "change the file" },
+      productionAssistantMessage({
+        stopReason: "aborted",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-aborted",
+            name: "exec",
+            arguments: { cmd: "touch side-effect" },
+            input: { cmd: "touch side-effect" },
+          },
+        ],
+      }),
     ]);
 
     const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
@@ -1320,8 +1451,7 @@ describe("main-session-restart-recovery", () => {
       },
     });
     await writeTranscript(sessionsDir, "main-session", [
-      { role: "user", content: "do the thing" },
-      { role: "assistant", content: "partial answer" },
+      { role: "system", content: "session initialized" },
     ]);
 
     const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });

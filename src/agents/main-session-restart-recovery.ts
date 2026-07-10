@@ -396,7 +396,33 @@ function isMeaningfulTailMessage(message: unknown): boolean {
 
 function isResumableTailMessage(message: unknown): boolean {
   const role = getMessageRole(message);
-  return role === "user" || role === "tool" || role === "toolResult";
+  if (role === "user" || role === "tool" || role === "toolResult") {
+    return true;
+  }
+  if (role !== "assistant" || !message || typeof message !== "object") {
+    return false;
+  }
+  const assistant = message as {
+    content?: unknown;
+    stopReason?: unknown;
+    tool_calls?: unknown;
+    toolCalls?: unknown;
+  };
+  if (assistant.stopReason !== "aborted") {
+    return false;
+  }
+  if (Array.isArray(assistant.tool_calls) || Array.isArray(assistant.toolCalls)) {
+    return false;
+  }
+  return !Array.isArray(assistant.content)
+    ? true
+    : !assistant.content.some((block) => {
+        if (!block || typeof block !== "object") {
+          return false;
+        }
+        const type = (block as { type?: unknown }).type;
+        return type === "toolCall" || type === "toolUse";
+      });
 }
 
 function isApprovalPendingToolResult(message: unknown): boolean {
